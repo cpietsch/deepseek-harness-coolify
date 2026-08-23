@@ -11,6 +11,7 @@ It provides:
 - Git, GitHub CLI, Python, uv, build tools, ripgrep, tmux and zsh;
 - a persistent source workspace and user home;
 - a dedicated Docker-in-Docker daemon with mutual TLS;
+- automatic discovery of each instance's full Tailscale MagicDNS authority;
 - no host Docker socket and no public host ports;
 - helpers for cloning, installing, type-checking and running Harness from source.
 
@@ -31,8 +32,6 @@ never mounted.
 2. A Tailscale auth key carrying `tag:ai`.
 3. HTTPS certificates enabled for your tailnet.
 4. Your SSH public key.
-5. The full MagicDNS hostname you want to use, for example
-   `deepseek-harness.example-tailnet.ts.net`.
 
 The Tailscale policy must define `tag:ai` and allow your normal devices to reach
 it. This repository does not use Funnel and does not expose the service publicly.
@@ -43,14 +42,18 @@ it. This repository does not use Funnel and does not expose the service publicly
 2. In Coolify choose **New Resource → Docker Compose from Git**.
 3. Select the repository and `docker-compose.yml`.
 4. Do not assign a public Coolify domain.
-5. Set the required environment variables:
+5. Set the environment variables:
 
 | Variable | Value |
 |---|---|
 | `TS_AUTHKEY` | Reusable, pre-approved Tailscale auth key tagged `tag:ai` |
-| `TS_HOSTNAME` | `deepseek-harness` |
-| `DSH_TRUSTED_HOST` | Full MagicDNS name, without `https://` |
 | `SSH_AUTHORIZED_KEYS` | One or more SSH public keys, newline-separated |
+| `TS_HOSTNAME` | Optional; defaults to `deepseek-harness`, but must be unique when running multiple instances |
+
+`DSH_TRUSTED_HOST` is no longer required. The Harness entrypoint reads the
+actual full MagicDNS name from the healthy Tailscale sidecar and passes it to
+`dsh web --trusted-host`. You may still set a bare `host[:port]` value as an
+override for Headscale or a custom proxy authority.
 
 Optional provider variables are `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, and `DEEPSEEK_BASE_URL`. Credentials may instead be saved
@@ -58,7 +61,23 @@ through **Settings → Models**. Harness stores UI-managed credentials under the
 persistent `DSH_HOME` volume.
 
 Deploy the resource. The first DinD start can take a little longer while it
-creates its CA and client certificates.
+creates its CA and client certificates. The Tailscale Serve configuration is
+embedded directly in `docker-compose.yml`; this is intentional because Coolify
+Git deployments do not reliably retain relative host bind mounts.
+
+### Run multiple instances
+
+Clone the Coolify resource and give each clone a unique `TS_HOSTNAME`:
+
+```text
+deepseek-1
+deepseek-2
+deepseek-3
+```
+
+The reusable tagged auth key and SSH key may stay the same. Every clone obtains
+its own persistent volumes, Tailscale identity, HTTPS certificate and trusted
+MagicDNS authority automatically.
 
 ## Access
 
@@ -179,6 +198,7 @@ authentication and settings remain authoritative.
 | `dind-data` | DinD images, containers and Docker volumes |
 | `dind-certs` | DinD CA and mutual-TLS client certificates |
 | `tailscale-state` | Stable Tailscale node identity |
+| `tailscale-socket` | Local socket used at startup to discover this node's MagicDNS name |
 | `ssh-host-keys` | Stable SSH server identity |
 
 Redeploying does not remove these volumes. Deleting the Coolify resource and
@@ -195,6 +215,25 @@ its volumes does.
 - The default Harness permission mode is `workspace-write`. Use more permissive
   modes only deliberately.
 - Keep telemetry disabled unless you have reviewed exactly what will be sent.
+
+## Troubleshooting
+
+Check private HTTPS routing in the Tailscale service terminal:
+
+```bash
+tailscale serve status
+```
+
+It should show the instance's `https://<name>.<tailnet>.ts.net` authority
+proxying `/` to `http://127.0.0.1:3080`. If Tailscale reports that no Serve
+configuration exists, confirm the deployed Compose contains the top-level
+`configs: tailscale-serve:` block.
+
+The Harness startup log should contain:
+
+```text
+Using trusted Harness authority: <name>.<tailnet>.ts.net
+```
 
 ## Updating
 

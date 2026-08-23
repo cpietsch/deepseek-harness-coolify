@@ -11,8 +11,11 @@ services:
       TS_EXTRA_ARGS: "--accept-dns=true --ssh=false --advertise-tags=tag:ai"
     volumes:
       - tailscale-state:/var/lib/tailscale
-      - ./tailscale:/config:ro
+      - tailscale-socket:/var/run/tailscale
       - /dev/net/tun:/dev/net/tun
+    configs:
+      - source: tailscale-serve
+        target: /config/serve.json
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -63,7 +66,9 @@ services:
       DSH_TELEMETRY_DISABLED: ${DSH_TELEMETRY_DISABLED:-1}
       DSH_TOOLS_MODE: ${DSH_TOOLS_MODE:-both}
       DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
-      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:?Set the full Tailscale MagicDNS hostname}
+      # Optional override. When empty, entrypoint discovers the full MagicDNS
+      # hostname from the healthy Tailscale sidecar.
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -77,6 +82,7 @@ services:
       - workspace:/home/dev/workspace
       - ssh-host-keys:/etc/ssh/hostkeys
       - dind-certs:/certs:ro
+      - tailscale-socket:/var/run/tailscale:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3080/ >/dev/null"]
@@ -92,8 +98,34 @@ services:
 
 volumes:
   tailscale-state:
+  tailscale-socket:
   dind-data:
   dind-certs:
   dev-home:
   workspace:
   ssh-host-keys:
+
+configs:
+  # Embedded because Coolify Git deployments do not reliably preserve relative
+  # host bind mounts such as ./tailscale:/config.
+  tailscale-serve:
+    content: |
+      {
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          }
+        },
+        "Web": {
+          "$${TS_CERT_DOMAIN}:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://127.0.0.1:3080"
+              }
+            }
+          }
+        },
+        "AllowFunnel": {
+          "$${TS_CERT_DOMAIN}:443": false
+        }
+      }

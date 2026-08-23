@@ -60,7 +60,30 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [ "${1:-}" = "dsh" ] && [ "${2:-}" = "web" ]; then
-  set -- "$@" --trusted-host "${DSH_TRUSTED_HOST}"
+  TRUSTED_HOST="${DSH_TRUSTED_HOST:-}"
+
+  if [ -z "${TRUSTED_HOST}" ]; then
+    echo "Discovering this node's MagicDNS hostname from Tailscale..."
+    for _ in $(seq 1 30); do
+      TRUSTED_HOST="$(
+        curl -fsS \
+          --unix-socket /var/run/tailscale/tailscaled.sock \
+          http://local-tailscaled.sock/localapi/v0/status 2>/dev/null \
+        | jq -r '.Self.DNSName // empty' \
+        | sed 's/\.$//'
+      )" || true
+      [ -n "${TRUSTED_HOST}" ] && break
+      sleep 1
+    done
+  fi
+
+  if [ -z "${TRUSTED_HOST}" ]; then
+    echo "Unable to discover the Tailscale MagicDNS hostname. Set DSH_TRUSTED_HOST as a bare host[:port] override." >&2
+    exit 1
+  fi
+
+  echo "Using trusted Harness authority: ${TRUSTED_HOST}"
+  set -- "$@" --trusted-host "${TRUSTED_HOST}"
 fi
 
 cd "${USER_HOME}/workspace"
