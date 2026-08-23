@@ -1,0 +1,99 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-deepseek-harness}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?Set TS_AUTHKEY in Coolify}
+      TS_HOSTNAME: ${TS_HOSTNAME:-deepseek-harness}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_EXTRA_ARGS: "--accept-dns=true --ssh=false --advertise-tags=tag:ai"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "tailscale", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+  dind:
+    image: docker:27-dind
+    privileged: true
+    depends_on:
+      tailscale:
+        condition: service_healthy
+    network_mode: service:tailscale
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - dind-data:/var/lib/docker
+      - dind-certs:/certs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  harness:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.1.1-rc.2}
+        PNPM_VERSION: ${PNPM_VERSION:-11.7.0}
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      dind:
+        condition: service_healthy
+    network_mode: service:tailscale
+    environment:
+      USERNAME: dev
+      SSH_AUTHORIZED_KEYS: ${SSH_AUTHORIZED_KEYS:?Set SSH_AUTHORIZED_KEYS in Coolify}
+      DSH_HOME: /home/dev/.dsh
+      DSH_TELEMETRY_DISABLED: ${DSH_TELEMETRY_DISABLED:-1}
+      DSH_TOOLS_MODE: ${DSH_TOOLS_MODE:-both}
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:?Set the full Tailscale MagicDNS hostname}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DOCKER_HOST: tcp://127.0.0.1:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+      TZ: Europe/Berlin
+    volumes:
+      - dev-home:/home/dev
+      - workspace:/home/dev/workspace
+      - ssh-host-keys:/etc/ssh/hostkeys
+      - dind-certs:/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3080/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+
+volumes:
+  tailscale-state:
+  dind-data:
+  dind-certs:
+  dev-home:
+  workspace:
+  ssh-host-keys:
