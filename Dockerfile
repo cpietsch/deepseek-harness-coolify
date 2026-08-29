@@ -49,6 +49,11 @@ RUN set -eux; \
     chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
 
 COPY sshd_dev.conf /etc/ssh/sshd_config.d/10-dev.conf
+# Drop image-baked HostKey files and the package defaults so sshd only uses the
+# volume-backed keys under /etc/ssh/hostkeys. Otherwise a rebuild rotates the
+# identity clients already cached.
+RUN sed -i -E 's/^HostKey /# HostKey /' /etc/ssh/sshd_config \
+    && rm -f /etc/ssh/ssh_host_*
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/setup-harness-source.sh /usr/local/bin/setup-harness-source
 COPY scripts/dsh-source-web.sh /usr/local/bin/dsh-source-web

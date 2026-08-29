@@ -22,9 +22,10 @@ published release instead of silently taking breaking updates.
 
 The Tailscale, DinD and Harness containers share one network namespace. Harness
 keeps its Web UI on `127.0.0.1:3080`; Tailscale Serve proxies private HTTPS to
-that loopback address. DinD listens with mutual TLS on `127.0.0.1:2376` and has
-its own persistent image/container store. The Coolify host Docker socket is
-never mounted.
+that loopback address. DinD listens with mutual TLS on TCP port 2376 (the
+upstream image binds `0.0.0.0:2376` inside that shared namespace) and has its
+own persistent image/container store. The Coolify host Docker socket is never
+mounted. Clients in this stack still connect through `127.0.0.1:2376`.
 
 ## Prerequisites
 
@@ -210,6 +211,9 @@ its volumes does.
   Coolify host.
 - DinD needs `privileged: true`. It is isolated from the host daemon, but a
   privileged container still increases the VM's attack surface.
+- The DinD TLS port is bound on `0.0.0.0:2376` inside the shared Tailscale
+  network namespace, so it is reachable on the tailnet. Mutual TLS is required;
+  do not disable `DOCKER_TLS_VERIFY` or share the `dind-certs` volume.
 - Never expose port 3080 or 22 through a public Coolify domain or host mapping.
 - Keep `AllowFunnel` disabled.
 - The default Harness permission mode is `workspace-write`. Use more permissive
@@ -234,6 +238,10 @@ The Harness startup log should contain:
 ```text
 Using trusted Harness authority: <name>.<tailnet>.ts.net
 ```
+
+Unauthenticated `GET /` on the Web UI returns `401`. That is expected until you
+open the launch URL printed by `dsh web`; the compose healthcheck treats
+`200`, `401`, and `303` as healthy.
 
 ## Updating
 

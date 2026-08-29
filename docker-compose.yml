@@ -4,6 +4,7 @@ services:
     hostname: ${TS_HOSTNAME:-deepseek-harness}
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY:?Set TS_AUTHKEY in Coolify}
+      TS_AUTH_ONCE: "true"
       TS_HOSTNAME: ${TS_HOSTNAME:-deepseek-harness}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
@@ -85,11 +86,13 @@ services:
       - tailscale-socket:/var/run/tailscale:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3080/ >/dev/null"]
+      # dsh web serves GET / as 401 until the printed launch cookie is present.
+      # curl -f treats that as failure and Coolify restarts a working UI.
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ | grep -qxE '200|401|303'"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 90s
     deploy:
       resources:
         limits:

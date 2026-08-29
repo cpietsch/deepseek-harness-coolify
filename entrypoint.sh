@@ -25,15 +25,23 @@ fi
 if [ ! -f /etc/ssh/hostkeys/ssh_host_rsa_key ]; then
   ssh-keygen -q -t rsa -b 4096 -N '' -f /etc/ssh/hostkeys/ssh_host_rsa_key
 fi
+# Never load the distro keys; they change on every image rebuild.
+rm -f /etc/ssh/ssh_host_*
 
 if [ -n "${DOCKER_CERT_PATH:-}" ]; then
   echo "Waiting for isolated Docker daemon certificates..."
+  certs_ready=0
   for _ in $(seq 1 90); do
     if [ -r "${DOCKER_CERT_PATH}/ca.pem" ] && [ -r "${DOCKER_CERT_PATH}/cert.pem" ] && [ -r "${DOCKER_CERT_PATH}/key.pem" ]; then
+      certs_ready=1
       break
     fi
     sleep 1
   done
+  if [ "${certs_ready}" -ne 1 ]; then
+    echo "Docker client certificates were not available at ${DOCKER_CERT_PATH} after 90s." >&2
+    exit 1
+  fi
 fi
 
 cat > /etc/profile.d/dev-runtime.sh <<EOF

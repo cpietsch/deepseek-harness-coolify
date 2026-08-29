@@ -15,6 +15,9 @@ fi
 
 cd "${TARGET}"
 git fetch --prune origin
+if git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+  git merge --ff-only '@{upstream}' || echo "Skipping fast-forward; continuing with the existing checkout."
+fi
 corepack enable
 pnpm install
 pnpm run typecheck
