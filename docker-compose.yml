@@ -71,7 +71,7 @@ services:
       # hostname from the healthy Tailscale sidecar.
       DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DOCKER_HOST: tcp://127.0.0.1:2376

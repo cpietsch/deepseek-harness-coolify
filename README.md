@@ -57,9 +57,10 @@ actual full MagicDNS name from the healthy Tailscale sidecar and passes it to
 override for Headscale or a custom proxy authority.
 
 Optional provider variables are `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, and `DEEPSEEK_BASE_URL`. Credentials may instead be saved
-through **Settings → Models**. Harness stores UI-managed credentials under the
-persistent `DSH_HOME` volume.
+`ANTHROPIC_API_KEY`, and `DEEPSEEK_BASE_URL`. The DeepSeek URL defaults to
+`https://api.deepseek.com`; set it only when using an OpenAI-compatible proxy.
+Credentials may instead be saved through **Settings → Models**. Harness stores
+UI-managed credentials under the persistent `DSH_HOME` volume.
 
 Deploy the resource. The first DinD start can take a little longer while it
 creates its CA and client certificates. The Tailscale Serve configuration is
