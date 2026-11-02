@@ -52,8 +52,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        DSH_VERSION: ${DSH_VERSION:-0.1.1-rc.2}
+        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.5}
         PNPM_VERSION: ${PNPM_VERSION:-11.7.0}
+        DSH_SUPERAGENT_REPOSITORY: ${DSH_SUPERAGENT_REPOSITORY:-https://github.com/deepseek-ai/dsh-superagent-prototype.git}
+        DSH_SUPERAGENT_REF: ${DSH_SUPERAGENT_REF:-6337fc823ce20251c8de8085948165c81aaa701e}
     depends_on:
       tailscale:
         condition: service_healthy
@@ -65,7 +67,7 @@ services:
       SSH_AUTHORIZED_KEYS: ${SSH_AUTHORIZED_KEYS:?Set SSH_AUTHORIZED_KEYS in Coolify}
       DSH_HOME: /home/dev/.dsh
       DSH_TELEMETRY_DISABLED: ${DSH_TELEMETRY_DISABLED:-1}
-      DSH_TOOLS_MODE: ${DSH_TOOLS_MODE:-both}
+      DSH_TOOLS_MODE: ${DSH_TOOLS_MODE:-native}
       DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
       # Optional override. When empty, entrypoint discovers the full MagicDNS
       # hostname from the healthy Tailscale sidecar.
@@ -99,6 +101,67 @@ services:
           cpus: "4"
           memory: 8G
 
+  # Separate process from the operator Web UI. The bundle changes PATH and git
+  # settings for its own process and needs restarts that must not close the
+  # operator's sessions. It shares the Tailscale network namespace so Serve
+  # can proxy 127.0.0.1:3082 without a public host port.
+  superagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.5}
+        PNPM_VERSION: ${PNPM_VERSION:-11.7.0}
+        DSH_SUPERAGENT_REPOSITORY: ${DSH_SUPERAGENT_REPOSITORY:-https://github.com/deepseek-ai/dsh-superagent-prototype.git}
+        DSH_SUPERAGENT_REF: ${DSH_SUPERAGENT_REF:-6337fc823ce20251c8de8085948165c81aaa701e}
+    command: ["serve-superagent"]
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      dind:
+        condition: service_healthy
+    network_mode: service:tailscale
+    environment:
+      USERNAME: dev
+      DSH_HOME: /home/dev/.dsh
+      DSH_TELEMETRY_DISABLED: ${DSH_TELEMETRY_DISABLED:-1}
+      DSH_TOOLS_MODE: ${DSH_TOOLS_MODE:-native}
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-}
+      DSH_SUPERAGENT_DIR: /opt/dsh-superagent-prototype
+      DSH_SUPERAGENT_REPOSITORY: ${DSH_SUPERAGENT_REPOSITORY:-https://github.com/deepseek-ai/dsh-superagent-prototype.git}
+      DSH_SUPERAGENT_REF: ${DSH_SUPERAGENT_REF:-6337fc823ce20251c8de8085948165c81aaa701e}
+      DSH_SUPERAGENT_AUTO_UPDATE: ${DSH_SUPERAGENT_AUTO_UPDATE:-0}
+      DSH_SUPERAGENT_PORT: ${DSH_SUPERAGENT_PORT:-3082}
+      DSH_SUPERAGENT_HTTPS_PORT: ${DSH_SUPERAGENT_HTTPS_PORT:-8443}
+      DSH_SUPERAGENT_PROFILE: superagent
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DOCKER_HOST: tcp://127.0.0.1:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+      TZ: Europe/Berlin
+    volumes:
+      - dev-home:/home/dev
+      - workspace:/home/dev/workspace
+      - dind-certs:/certs:ro
+      - tailscale-socket:/var/run/tailscale:ro
+    restart: unless-stopped
+    healthcheck:
+      # Same unauthenticated 401 as the operator UI until the launch token is present.
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/ | grep -qxE '200|401|303'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 240s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+
 volumes:
   tailscale-state:
   tailscale-socket:
@@ -117,6 +180,9 @@ configs:
         "TCP": {
           "443": {
             "HTTPS": true
+          },
+          "8443": {
+            "HTTPS": true
           }
         },
         "Web": {
@@ -126,9 +192,17 @@ configs:
                 "Proxy": "http://127.0.0.1:3080"
               }
             }
+          },
+          "$${TS_CERT_DOMAIN}:8443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://127.0.0.1:3082"
+              }
+            }
           }
         },
         "AllowFunnel": {
-          "$${TS_CERT_DOMAIN}:443": false
+          "$${TS_CERT_DOMAIN}:443": false,
+          "$${TS_CERT_DOMAIN}:8443": false
         }
       }
