@@ -6,6 +6,7 @@ A private, persistent development environment for DeepSeek Harness, adapted from
 It provides:
 
 - the published DeepSeek Harness Web UI on private Tailscale HTTPS;
+- the [dsh-superagent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) panel on private Tailscale HTTPS port 8443;
 - SSH access for VS Code/Cursor Remote SSH;
 - Node.js 24 and the upstream-pinned pnpm 11.7.0;
 - Git, GitHub CLI, Python, uv, build tools, ripgrep, tmux and zsh;
@@ -16,16 +17,21 @@ It provides:
 - helpers for cloning, installing, type-checking and running Harness from source.
 
 DeepSeek Harness is a developer preview. This repository pins the current
-published release instead of silently taking breaking updates.
+published npm `latest` release, `@deepseek-ai/dsh@0.2.1-rc.5`, instead of
+silently taking breaking updates. The newer `0.2.2-alpha.2` dist-tag is not
+used: the superagent prototype declares `engines.dsh` of `^0.2.1-alpha.2`,
+which `0.2.1-rc.5` satisfies.
 
 ## Architecture
 
-The Tailscale, DinD and Harness containers share one network namespace. Harness
-keeps its Web UI on `127.0.0.1:3080`; Tailscale Serve proxies private HTTPS to
-that loopback address. DinD listens with mutual TLS on TCP port 2376 (the
-upstream image binds `0.0.0.0:2376` inside that shared namespace) and has its
-own persistent image/container store. The Coolify host Docker socket is never
-mounted. Clients in this stack still connect through `127.0.0.1:2376`.
+The Tailscale, DinD, Harness and superagent containers share one network
+namespace. Harness keeps its Web UI on `127.0.0.1:3080`. The superagent profile
+keeps its panel on `127.0.0.1:3082`. Tailscale Serve proxies private HTTPS on
+443 to the Harness UI and on 8443 to the superagent panel. DinD listens with
+mutual TLS on TCP port 2376 (the upstream image binds `0.0.0.0:2376` inside
+that shared namespace) and has its own persistent image/container store. The
+Coolify host Docker socket is never mounted. Clients in this stack still
+connect through `127.0.0.1:2376`.
 
 ## Prerequisites
 
@@ -60,7 +66,18 @@ Optional provider variables are `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, and `DEEPSEEK_BASE_URL`. The DeepSeek URL defaults to
 `https://api.deepseek.com`; set it only when using an OpenAI-compatible proxy.
 Credentials may instead be saved through **Settings → Models**. Harness stores
-UI-managed credentials under the persistent `DSH_HOME` volume.
+UI-managed credentials under the persistent `DSH_HOME` volume. The operator Web
+profile and the superagent profile keep separate credentials.
+
+`DSH_TOOLS_MODE` is `native` or `ptc`. Leave it unset or `native` unless you want
+the whole process in programmatic tool-calling mode. The 0.1 value `both` is
+rejected by 0.2.1.
+
+`DSH_VERSION` defaults to `0.2.1-rc.5`. `DSH_SUPERAGENT_REF` defaults to
+`6337fc823ce20251c8de8085948165c81aaa701e`, the published prototype commit.
+Leave `DSH_SUPERAGENT_AUTO_UPDATE` at `0` so a restart does not move that
+checkout. Port 8443 in Tailscale Serve is fixed in `docker-compose.yml`; keep
+`DSH_SUPERAGENT_HTTPS_PORT` at `8443` unless you change both.
 
 Deploy the resource. The first DinD start can take a little longer while it
 creates its CA and client certificates. The Tailscale Serve configuration is
@@ -87,6 +104,12 @@ Web UI:
 
 ```text
 https://deepseek-harness.example-tailnet.ts.net
+```
+
+Superagent panel:
+
+```text
+https://deepseek-harness.example-tailnet.ts.net:8443
 ```
 
 SSH:
@@ -168,6 +191,52 @@ For frontend watch mode, use the upstream command after an initial build:
 pnpm run dev:web
 ```
 
+## dsh-superagent
+
+The `superagent` service runs
+[deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)
+as its own DeepSeek Harness profile, copied from the Web template. It is a
+research prototype, not a DeepSeek product. The image builds the pinned
+checkout. On start, `setup-superagent` links that checkout into the persistent
+profile and writes machine config only when `cordis.patch.yml` does not already
+contain a `dsh-superagent` entry. It never runs
+`--from-default-profile` against an existing profile.
+
+The service listens before GitHub is configured. The log prints a launch URL
+with a token. Open that URL, then choose **Superagent** in the sidebar.
+Unauthenticated `GET /` returns `401` until then. The panel stays in setup-wait
+until the GitHub source has a repository and an agent CLI.
+
+This stack does not create a GitHub account or store a token. Finish that over
+SSH, as a dedicated agent account, never your own:
+
+```bash
+gh-agent auth login
+gh-agent api user --jq .login
+```
+
+`gh-agent` is `gh` with `GH_CONFIG_DIR=$HOME/.config/gh-agent`. Give that
+account write access to the repository, then in the panel set:
+
+- GitHub source repository, as `owner/name`
+- GitHub CLI `/home/dev/.local/bin/gh-agent`
+- the GitHub logins allowed to ask for work
+- an execution prepare command that checks out a clone under `~/workspace`
+
+A local clone on the `workspace` volume survives redeploys. Query setup from
+either container:
+
+```bash
+curl -sS -H 'x-orchestrator-request: 1' \
+  http://127.0.0.1:3082/orchestrator/api/state
+```
+
+`scripts/dsh-superagent status` only sees the process from inside the
+superagent container. Prefer the API above, or that service's logs.
+
+If the tailnet ACL names ports, allow TCP `8443` to `tag:ai`. A rule that
+already allows all TCP to that tag needs no change.
+
 ## Harness plugins and subagents
 
 The image supports normal profile plugin management:
@@ -219,6 +288,9 @@ its volumes does.
 - Keep `AllowFunnel` disabled.
 - The default Harness permission mode is `workspace-write`. Use more permissive
   modes only deliberately.
+- Superagent workers use the bundle's `danger-full-access` presets as the
+  `dev` user. They can use the isolated DinD daemon. They still cannot see the
+  Coolify host Docker socket.
 - Keep telemetry disabled unless you have reviewed exactly what will be sent.
 
 ## Troubleshooting
@@ -230,8 +302,9 @@ tailscale serve status
 ```
 
 It should show the instance's `https://<name>.<tailnet>.ts.net` authority
-proxying `/` to `http://127.0.0.1:3080`. If Tailscale reports that no Serve
-configuration exists, confirm the deployed Compose contains the top-level
+proxying `/` to `http://127.0.0.1:3080`, and port `8443` proxying `/` to
+`http://127.0.0.1:3082`. If Tailscale reports that no Serve configuration
+exists, confirm the deployed Compose contains the top-level
 `configs: tailscale-serve:` block.
 
 The Harness startup log should contain:
@@ -248,6 +321,20 @@ open the launch URL printed by `dsh web`; the compose healthcheck treats
 
 Change `DSH_VERSION` in Coolify and redeploy. Because upstream warns about
 breaking changes, review the DeepSeek Harness release and migration notes first.
+This tree moved from `0.1.1-rc.2` to `0.2.1-rc.5`. If Coolify still has
+`DSH_TOOLS_MODE=both`, change it to `native` or delete it before redeploying;
+0.2.1 rejects `both` and the Web UI will not start. Persistent profiles usually
+keep working. If the Web UI fails to boot after that jump, move
+`~/.dsh/profiles/web` aside and let `dsh web` recreate it. UI-managed
+credentials live under the persistent `DSH_HOME` volume, not only in that
+profile directory; confirm they are still present before deleting anything.
+
+To move the superagent bundle, set `DSH_SUPERAGENT_REF` to a commit the
+prototype still builds with this `DSH_VERSION`, then redeploy. The running
+service relinks the bundle when that ref or the `dsh` version changes. It does
+not overwrite an existing superagent `cordis.patch.yml`. Back up
+`~/.dsh/state/superagent/orchestrator.sqlite` before that redeploy. A database
+written by a newer prototype cannot be opened by an older one.
 
 Update a source checkout separately:
 

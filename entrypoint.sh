@@ -44,14 +44,25 @@ if [ -n "${DOCKER_CERT_PATH:-}" ]; then
   fi
 fi
 
+mkdir -p "${USER_HOME}/.local/bin"
+if [ ! -e "${USER_HOME}/.local/bin/gh-agent" ]; then
+  cat > "${USER_HOME}/.local/bin/gh-agent" <<'EOF'
+#!/bin/sh
+GH_CONFIG_DIR="${HOME}/.config/gh-agent" exec gh "$@"
+EOF
+  chmod 755 "${USER_HOME}/.local/bin/gh-agent"
+fi
+chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/.local"
+
 cat > /etc/profile.d/dev-runtime.sh <<EOF
 export DSH_HOME="${DSH_HOME:-${USER_HOME}/.dsh}"
-export DSH_TOOLS_MODE="${DSH_TOOLS_MODE:-both}"
+export DSH_TOOLS_MODE="${DSH_TOOLS_MODE:-native}"
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
 export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
 export DOCKER_HOST="${DOCKER_HOST:-tcp://127.0.0.1:2376}"
 export DOCKER_TLS_VERIFY="${DOCKER_TLS_VERIFY:-1}"
 export DOCKER_CERT_PATH="${DOCKER_CERT_PATH:-/certs/client}"
+export PATH="${USER_HOME}/.local/bin:\${PATH}"
 EOF
 chmod 0644 /etc/profile.d/dev-runtime.sh
 
@@ -59,39 +70,49 @@ if ! grep -q 'profile.d/dev-runtime.sh' /etc/zsh/zshenv 2>/dev/null; then
   printf '%s\n' '[ -r /etc/profile.d/dev-runtime.sh ] && . /etc/profile.d/dev-runtime.sh' >> /etc/zsh/zshenv
 fi
 
-/usr/sbin/sshd -D -e &
-SSHD_PID=$!
+if [ "${1:-}" != "serve-superagent" ]; then
+  /usr/sbin/sshd -D -e &
+  SSHD_PID=$!
 
-cleanup() {
-  kill -TERM "${SSHD_PID}" 2>/dev/null || true
+  cleanup() {
+    kill -TERM "${SSHD_PID}" 2>/dev/null || true
+  }
+  trap cleanup EXIT INT TERM
+fi
+
+discover_trusted_host() {
+  if [ -n "${DSH_TRUSTED_HOST:-}" ]; then
+    printf '%s' "${DSH_TRUSTED_HOST}"
+    return 0
+  fi
+  local host=""
+  echo "Discovering this node's MagicDNS hostname from Tailscale..." >&2
+  for _ in $(seq 1 30); do
+    host="$(
+      curl -fsS \
+        --unix-socket /var/run/tailscale/tailscaled.sock \
+        http://local-tailscaled.sock/localapi/v0/status 2>/dev/null \
+      | jq -r '.Self.DNSName // empty' \
+      | sed 's/\.$//'
+    )" || true
+    [ -n "${host}" ] && break
+    sleep 1
+  done
+  if [ -z "${host}" ]; then
+    echo "Unable to discover the Tailscale MagicDNS hostname. Set DSH_TRUSTED_HOST as a bare host[:port] override." >&2
+    return 1
+  fi
+  printf '%s' "${host}"
 }
-trap cleanup EXIT INT TERM
+
+if { [ "${1:-}" = "dsh" ] && [ "${2:-}" = "web" ]; } || [ "${1:-}" = "serve-superagent" ]; then
+  DSH_TRUSTED_HOST="$(discover_trusted_host)"
+  export DSH_TRUSTED_HOST
+  echo "Using trusted Harness authority: ${DSH_TRUSTED_HOST}"
+fi
 
 if [ "${1:-}" = "dsh" ] && [ "${2:-}" = "web" ]; then
-  TRUSTED_HOST="${DSH_TRUSTED_HOST:-}"
-
-  if [ -z "${TRUSTED_HOST}" ]; then
-    echo "Discovering this node's MagicDNS hostname from Tailscale..."
-    for _ in $(seq 1 30); do
-      TRUSTED_HOST="$(
-        curl -fsS \
-          --unix-socket /var/run/tailscale/tailscaled.sock \
-          http://local-tailscaled.sock/localapi/v0/status 2>/dev/null \
-        | jq -r '.Self.DNSName // empty' \
-        | sed 's/\.$//'
-      )" || true
-      [ -n "${TRUSTED_HOST}" ] && break
-      sleep 1
-    done
-  fi
-
-  if [ -z "${TRUSTED_HOST}" ]; then
-    echo "Unable to discover the Tailscale MagicDNS hostname. Set DSH_TRUSTED_HOST as a bare host[:port] override." >&2
-    exit 1
-  fi
-
-  echo "Using trusted Harness authority: ${TRUSTED_HOST}"
-  set -- "$@" --trusted-host "${TRUSTED_HOST}"
+  set -- "$@" --trusted-host "${DSH_TRUSTED_HOST}"
 fi
 
 cd "${USER_HOME}/workspace"

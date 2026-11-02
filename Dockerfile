@@ -3,7 +3,7 @@ FROM node:24-bookworm-slim
 ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
-ARG DSH_VERSION=0.1.1-rc.2
+ARG DSH_VERSION=0.2.1-rc.5
 ARG PNPM_VERSION=11.7.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -12,7 +12,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Europe/Berlin \
     DSH_HOME=/home/dev/.dsh \
     DSH_TELEMETRY_DISABLED=1 \
-    DSH_TOOLS_MODE=both
+    DSH_TOOLS_MODE=native \
+    COREPACK_HOME=/opt/corepack \
+    COREPACK_DEFAULT_TO_LATEST=0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash bubblewrap build-essential ca-certificates curl dnsutils \
@@ -21,9 +23,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-dev python3-pip python3-venv ripgrep sudo tini \
         tmux tzdata unzip vim wget zip zsh \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
-    && npm install --global "corepack@latest" "@deepseek-ai/dsh@${DSH_VERSION}" \
+    && if npm install --help 2>&1 | grep -q -- '--dangerously-allow-all-scripts'; then \
+         npm install --global --dangerously-allow-all-scripts "corepack@latest" "@deepseek-ai/dsh@${DSH_VERSION}"; \
+       else \
+         npm install --global "corepack@latest" "@deepseek-ai/dsh@${DSH_VERSION}"; \
+       fi \
+    && mkdir -p /opt/corepack \
     && corepack enable \
     && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
+    && chmod -R a+rX /opt/corepack \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -48,6 +56,20 @@ RUN set -eux; \
     mkdir -p "/home/${USERNAME}/.ssh" "/home/${USERNAME}/.dsh" "/home/${USERNAME}/workspace" /run/sshd /etc/ssh/hostkeys; \
     chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
 
+# Pinned checkout of dsh-superagent-prototype. Declared here so changing the
+# ref does not rebuild the apt/dsh layers above.
+ARG DSH_SUPERAGENT_REPOSITORY=https://github.com/deepseek-ai/dsh-superagent-prototype.git
+ARG DSH_SUPERAGENT_REF=6337fc823ce20251c8de8085948165c81aaa701e
+ENV DSH_SUPERAGENT_DIR=/opt/dsh-superagent-prototype \
+    DSH_SUPERAGENT_REF=${DSH_SUPERAGENT_REF}
+RUN set -eux; \
+    git clone "${DSH_SUPERAGENT_REPOSITORY}" /opt/dsh-superagent-prototype; \
+    git -C /opt/dsh-superagent-prototype checkout --detach "${DSH_SUPERAGENT_REF}"; \
+    cd /opt/dsh-superagent-prototype; \
+    pnpm install --frozen-lockfile; \
+    pnpm build; \
+    chown -R "${USERNAME}:${USERNAME}" /opt/dsh-superagent-prototype
+
 COPY sshd_dev.conf /etc/ssh/sshd_config.d/10-dev.conf
 # Drop image-baked HostKey files and the package defaults so sshd only uses the
 # volume-backed keys under /etc/ssh/hostkeys. Otherwise a rebuild rotates the
@@ -57,10 +79,13 @@ RUN sed -i -E 's/^HostKey /# HostKey /' /etc/ssh/sshd_config \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/setup-harness-source.sh /usr/local/bin/setup-harness-source
 COPY scripts/dsh-source-web.sh /usr/local/bin/dsh-source-web
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/setup-harness-source /usr/local/bin/dsh-source-web
+COPY scripts/setup-superagent.sh /usr/local/bin/setup-superagent
+COPY scripts/serve-superagent.sh /usr/local/bin/serve-superagent
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/setup-harness-source \
+    /usr/local/bin/dsh-source-web /usr/local/bin/setup-superagent /usr/local/bin/serve-superagent
 
 WORKDIR /home/dev/workspace
-EXPOSE 22 3080
+EXPOSE 22 3080 3082
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["dsh", "web", "--no-open", "--port", "3080"]
